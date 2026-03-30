@@ -3,12 +3,10 @@
 #include "ns3/internet-module.h"
 #include "ns3/point-to-point-module.h"
 #include "ns3/applications-module.h"
-#include "ns3/point-to-point-layout-module.h"
-#include "ns3/tcp-congestion-ops.h"
 
 using namespace ns3;
 
-NS_LOG_COMPONENT_DEFINE ("DumbbellFinal");
+NS_LOG_COMPONENT_DEFINE ("DumbbellManual");
 
 /* ======== CWND ======== */
 static void
@@ -37,7 +35,7 @@ TraceThroughput(Ptr<PacketSink> sink, Ptr<OutputStreamWrapper> stream)
 int main (int argc, char *argv[])
 {
     std::string tcpType = "TcpReno";
-    double simTime = 30.0;
+    double simTime = 120.0;
 
     CommandLine cmd;
     cmd.AddValue("tcpType", "TcpReno ou TcpCubic", tcpType);
@@ -45,94 +43,107 @@ int main (int argc, char *argv[])
 
     /* ======== TCP ======== */
     if (tcpType == "TcpReno") {
-        Config::SetDefault("ns3::TcpL4Protocol::SocketType", StringValue("ns3::TcpNewReno"));
-    }
-    else if (tcpType == "TcpCubic") {
-        Config::SetDefault("ns3::TcpL4Protocol::SocketType", StringValue("ns3::TcpCubic"));
-    }
-    else {
-        NS_FATAL_ERROR("TCP inválido");
+        Config::SetDefault("ns3::TcpL4Protocol::SocketType",
+            StringValue("ns3::TcpNewReno"));
+    } else {
+        Config::SetDefault("ns3::TcpL4Protocol::SocketType",
+            StringValue("ns3::TcpCubic"));
     }
 
-    /* ======== TOPOLOGIA ======== */
-    PointToPointHelper leaf, bottle;
-
-    leaf.SetDeviceAttribute("DataRate", StringValue("100Mbps"));
-    leaf.SetChannelAttribute("Delay", StringValue("1ms"));
-
-    bottle.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
-    bottle.SetChannelAttribute("Delay", StringValue("2ms"));
-
-    PointToPointDumbbellHelper d(1, leaf, 1, leaf, bottle);
+    /* ======== NÓS ======== */
+    NodeContainer S1, S2, R1, R2, D;
+    S1.Create(1); // TCP
+    S2.Create(1); // UDP
+    R1.Create(1);
+    R2.Create(1);
+    D.Create(1);  // destino único
 
     InternetStackHelper stack;
-    d.InstallStack(stack);
+    stack.InstallAll();
 
-    d.AssignIpv4Addresses(
-        Ipv4AddressHelper("10.1.1.0", "255.255.255.0"),
-        Ipv4AddressHelper("10.2.1.0", "255.255.255.0"),
-        Ipv4AddressHelper("10.3.1.0", "255.255.255.0")
-    );
+    /* ======== LINKS ======== */
+    PointToPointHelper leaf, bottle;
+
+    // folhas (acesso)
+    leaf.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
+    leaf.SetChannelAttribute("Delay", StringValue("40ms"));
+
+    // gargalo
+    bottle.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
+    bottle.SetChannelAttribute("Delay", StringValue("20ms"));
+
+    // conexões
+    NetDeviceContainer d_S1_R1 = leaf.Install(S1.Get(0), R1.Get(0));
+    NetDeviceContainer d_S2_R1 = leaf.Install(S2.Get(0), R1.Get(0));
+    NetDeviceContainer d_R1_R2 = bottle.Install(R1.Get(0), R2.Get(0));
+    NetDeviceContainer d_R2_D  = leaf.Install(R2.Get(0), D.Get(0));
+
+    /* ======== IP ======== */
+    Ipv4AddressHelper addr;
+
+    addr.SetBase("10.1.1.0", "255.255.255.0");
+    auto i_S1_R1 = addr.Assign(d_S1_R1);
+
+    addr.SetBase("10.1.2.0", "255.255.255.0");
+    auto i_S2_R1 = addr.Assign(d_S2_R1);
+
+    addr.SetBase("10.1.3.0", "255.255.255.0");
+    auto i_R1_R2 = addr.Assign(d_R1_R2);
+
+    addr.SetBase("10.1.4.0", "255.255.255.0");
+    auto i_R2_D  = addr.Assign(d_R2_D);
 
     Ipv4GlobalRoutingHelper::PopulateRoutingTables();
 
-    uint16_t udpPort = 4000;
     uint16_t tcpPort = 5000;
+    uint16_t udpPort = 4000;
 
-    /* ======== UDP BACKGROUND ======== */
-    PacketSinkHelper udpSink("ns3::UdpSocketFactory",
-        InetSocketAddress(Ipv4Address::GetAny(), udpPort));
-
-    ApplicationContainer udpSinkApp = udpSink.Install(d.GetRight(0));
-    udpSinkApp.Start(Seconds(0.0));
-    udpSinkApp.Stop(Seconds(simTime));
-
-    OnOffHelper udp("ns3::UdpSocketFactory",
-        InetSocketAddress(d.GetRightIpv4Address(0), udpPort));
-
-    udp.SetConstantRate(DataRate("6Mbps"), 1024);
-
-    ApplicationContainer udpApp = udp.Install(d.GetLeft(0));
-    udpApp.Start(Seconds(0.0));
-    udpApp.Stop(Seconds(simTime));
-
-
-    /* ======== TCP (REAL) ======== */
+    /* ======== SINK (DESTINO) ======== */
     PacketSinkHelper tcpSink("ns3::TcpSocketFactory",
         InetSocketAddress(Ipv4Address::GetAny(), tcpPort));
 
-    ApplicationContainer tcpSinkApp = tcpSink.Install(d.GetRight(0));
+    ApplicationContainer tcpSinkApp = tcpSink.Install(D.Get(0));
     tcpSinkApp.Start(Seconds(0.0));
-    tcpSinkApp.Stop(Seconds(simTime));
 
+    PacketSinkHelper udpSink("ns3::UdpSocketFactory",
+        InetSocketAddress(Ipv4Address::GetAny(), udpPort));
+
+    udpSink.Install(D.Get(0)).Start(Seconds(0.0));
+
+    /* ======== S1 (TCP) ======== */
     BulkSendHelper tcp("ns3::TcpSocketFactory",
-        InetSocketAddress(d.GetRightIpv4Address(0), tcpPort));
+        InetSocketAddress(i_R2_D.GetAddress(1), tcpPort));
 
     tcp.SetAttribute("MaxBytes", UintegerValue(0));
 
-    ApplicationContainer tcpApp = tcp.Install(d.GetLeft(0));
-    tcpApp.Start(Seconds(1.0));
-    tcpApp.Stop(Seconds(simTime));
+    tcp.Install(S1.Get(0)).Start(Seconds(1.0));
+
+    /* ======== S2 (UDP BACKGROUND) ======== */
+    OnOffHelper udp("ns3::UdpSocketFactory",
+        InetSocketAddress(i_R2_D.GetAddress(1), udpPort));
+
+    udp.SetConstantRate(DataRate("8Mbps"), 1024);
+
+    udp.Install(S2.Get(0)).Start(Seconds(0.0));
 
     /* ======== TRACE ======== */
     AsciiTraceHelper ascii;
 
-    auto cwndStream = ascii.CreateFileStream("cwnd-" + tcpType + "6.dat");
+    auto cwndStream = ascii.CreateFileStream("cwnd-" + tcpType + ".dat");
+    auto thrStream  = ascii.CreateFileStream("throughput-" + tcpType + ".dat");
 
+    // CWND (espera socket existir)
     Simulator::Schedule(Seconds(1.1), [&](){
         Config::ConnectWithoutContext(
-            "/NodeList/*/$ns3::TcpL4Protocol/SocketList/*/CongestionWindow",
-            MakeBoundCallback(&CwndChange, cwndStream)
-        );
+            "/NodeList/0/$ns3::TcpL4Protocol/SocketList/0/CongestionWindow",
+            MakeBoundCallback(&CwndChange, cwndStream));
     });
 
-    auto thrStream  = ascii.CreateFileStream("throughput-" + tcpType + "6.dat");
-
+    // Throughput
     Ptr<PacketSink> sink = DynamicCast<PacketSink>(tcpSinkApp.Get(0));
-
     Simulator::Schedule(Seconds(1.1), &TraceThroughput, sink, thrStream);
 
-    /* ======== SIMULAÇÃO ======== */
+    /* ======== RUN ======== */
     Simulator::Stop(Seconds(simTime));
     Simulator::Run();
     Simulator::Destroy();
