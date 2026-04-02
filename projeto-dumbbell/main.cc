@@ -55,10 +55,11 @@ int main (int argc, char *argv[])
     PointToPointHelper leaf, bottle;
 
     leaf.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
-    leaf.SetChannelAttribute("Delay", StringValue("40ms"));
+    leaf.SetChannelAttribute("Delay", StringValue("10ms"));
 
     bottle.SetDeviceAttribute("DataRate", StringValue("10Mbps"));
-    bottle.SetChannelAttribute("Delay", StringValue("20ms"));
+    bottle.SetChannelAttribute("Delay", StringValue("10ms"));
+    bottle.SetQueue("ns3::DropTailQueue","MaxSize", StringValue("100p"));
 
     PointToPointDumbbellHelper d(2, leaf, 2, leaf, bottle);
 
